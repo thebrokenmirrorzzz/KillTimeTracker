@@ -22,9 +22,10 @@ public sealed class KillTimeTracker : BasePlugin
 {
     private const float TRACE_DISTANCE = 8192.0f;
     private const double MAX_ELAPSED_MS = 9999.0;
-    private const double SIGHT_LOST_TIMEOUT_MS = 2000.0;
+    private const double SIGHT_LOST_TIMEOUT_MS = 3000.0;
 
     private readonly Dictionary<int, TargetState> playerTargets = new();
+    private readonly Dictionary<int, Dictionary<int, DamageEntry>> playerDamageTrack = new();
 
     public KillTimeTracker(ISwiftlyCore core) : base(core)
     {
@@ -52,6 +53,25 @@ public sealed class KillTimeTracker : BasePlugin
         if (player == null) return;
 
         playerTargets.Remove(player.Slot);
+        playerDamageTrack.Remove(player.Slot);
+    }
+
+    private void CleanDamageTrack(int attackerSlot)
+    {
+        if (!playerDamageTrack.TryGetValue(attackerSlot, out var track)) return;
+
+        var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
+        var expired = new List<int>();
+        foreach (var kv in track)
+        {
+            if (now - kv.Value.LastHitTime > SIGHT_LOST_TIMEOUT_MS)
+                expired.Add(kv.Key);
+        }
+        foreach (var victimSlot in expired)
+            track.Remove(victimSlot);
+
+        if (track.Count == 0)
+            playerDamageTrack.Remove(attackerSlot);
     }
 
     private void DetectionTick()
@@ -73,8 +93,12 @@ public sealed class KillTimeTracker : BasePlugin
 
                     playerTargets.Remove(player.Slot);
                 }
+
+                playerDamageTrack.Remove(player.Slot);
                 continue;
             }
+
+            CleanDamageTrack(player.Slot);
 
             var target = DetectTarget(player);
 
@@ -152,6 +176,36 @@ public sealed class KillTimeTracker : BasePlugin
     }
 
     [GameEventHandler(HookMode.Post)]
+    public HookResult OnPlayerHurt(EventPlayerHurt @event)
+    {
+        var attacker = @event.AttackerPlayer;
+        var victim = @event.UserIdPlayer;
+        if (attacker == null || victim == null) return HookResult.Continue;
+        if (attacker == victim) return HookResult.Continue;
+
+        var attackerSlot = attacker.Slot;
+        var victimSlot = victim.Slot;
+
+        if (!playerDamageTrack.TryGetValue(attackerSlot, out var track))
+        {
+            track = new Dictionary<int, DamageEntry>();
+            playerDamageTrack[attackerSlot] = track;
+        }
+
+        var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
+        if (track.TryGetValue(victimSlot, out var entry))
+        {
+            entry.LastHitTime = now;
+        }
+        else
+        {
+            track[victimSlot] = new DamageEntry { FirstHitTime = now, LastHitTime = now };
+        }
+
+        return HookResult.Continue;
+    }
+
+    [GameEventHandler(HookMode.Post)]
     public HookResult OnPlayerDeath(EventPlayerDeath @event)
     {
         var attacker = @event.AttackerPlayer;
@@ -172,8 +226,16 @@ public sealed class KillTimeTracker : BasePlugin
         {
             if (state.CurrentTargetSlot != -1) return HookResult.Continue;
 
+            if (playerDamageTrack.TryGetValue(attackerSlot, out var track) && track.TryGetValue(victim.Slot, out var damageEntry))
+            {
+                state.StartTime = damageEntry.FirstHitTime;
+            }
+            else
+            {
+                state.StartTime = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
+            }
+
             state.CurrentTargetSlot = victim.Slot;
-            state.StartTime = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
         }
 
         if (state.HasOutput) return HookResult.Continue;
@@ -198,6 +260,9 @@ public sealed class KillTimeTracker : BasePlugin
         state.HasOutput = false;
         state.LastSeenTime = 0;
 
+        if (playerDamageTrack.TryGetValue(attackerSlot, out var dmgTrack))
+            dmgTrack.Remove(victim.Slot);
+
         return HookResult.Continue;
     }
 
@@ -205,7 +270,14 @@ public sealed class KillTimeTracker : BasePlugin
     public HookResult OnRoundStart(EventRoundStart @event)
     {
         playerTargets.Clear();
+        playerDamageTrack.Clear();
         return HookResult.Continue;
+    }
+
+    private sealed class DamageEntry
+    {
+        public double FirstHitTime;
+        public double LastHitTime;
     }
 
     private sealed class TargetState

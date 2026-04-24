@@ -17,3 +17,4 @@ D:\sw2_plugins\KillTimeTracker\obj\Debug\net10.0\KillTimeTracker.dll
 D:\sw2_plugins\KillTimeTracker\obj\Debug\net10.0\refint\KillTimeTracker.dll
 D:\sw2_plugins\KillTimeTracker\obj\Debug\net10.0\KillTimeTracker.pdb
 D:\sw2_plugins\KillTimeTracker\obj\Debug\net10.0\ref\KillTimeTracker.dll
+D:\sw2_plugins\KillTimeTracker\obj\Debug\net10.0\KillTimeTracker.sourcelink.json
