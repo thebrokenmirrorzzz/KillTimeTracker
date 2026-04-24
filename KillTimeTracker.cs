@@ -20,10 +20,11 @@ namespace KillTimeTracker;
 )]
 public sealed class KillTimeTracker : BasePlugin
 {
-    private const float TRACE_DISTANCE = 8192.0f;
     private const double MAX_ELAPSED_MS = 9999.0;
     private const double SIGHT_LOST_TIMEOUT_MS = 3000.0;
+    private const float VIEW_CONE_DEGREES = 45.0f;
 
+    private readonly float cosHalfAngle = (float)Math.Cos(VIEW_CONE_DEGREES * Math.PI / 180.0);
     private readonly Dictionary<int, TargetState> playerTargets = new();
     private readonly Dictionary<int, Dictionary<int, DamageEntry>> playerDamageTrack = new();
 
@@ -158,21 +159,56 @@ public sealed class KillTimeTracker : BasePlugin
         if (eyePos == null) return null;
 
         var eyeAngles = pawn.EyeAngles;
+        eyeAngles.ToDirectionVectors(out var forward, out var _, out var _);
 
-        var traceParams = TraceParams.Builder()
-            .InteractWith(MaskTrace.Solid | MaskTrace.Player | MaskTrace.Hitbox | MaskTrace.WorldGeometry)
-            .InteractExclude(MaskTrace.Trigger)
-            .IgnoreEntity(pawn)
-            .Build();
+        var players = Core.PlayerManager.GetAllPlayers();
+        if (players == null) return null;
 
-        var result = Core.Trace.TraceShapeAngle(eyePos.Value, eyeAngles, TRACE_DISTANCE, traceParams);
+        IPlayer? bestTarget = null;
+        float bestDot = cosHalfAngle;
 
-        if (!result.DidHit) return null;
-        if (!result.HitPlayer(out var targetPlayer)) return null;
-        if (targetPlayer == null) return null;
-        if (!targetPlayer.IsValid || !targetPlayer.IsAlive) return null;
+        foreach (var other in players)
+        {
+            if (other?.IsValid != true || !other.IsAlive) continue;
+            if (other.Slot == player.Slot) continue;
+            if (other.Controller.TeamNum < 2) continue;
+            if (other.Controller.TeamNum == player.Controller.TeamNum) continue;
 
-        return targetPlayer;
+            var otherPawn = other.PlayerPawn;
+            if (otherPawn == null) continue;
+            var otherEyePos = otherPawn.EyePosition;
+            if (otherEyePos == null) continue;
+
+            var toTarget = otherEyePos.Value - eyePos.Value;
+            var dist = toTarget.Length();
+            if (dist < 0.1f) continue;
+
+            var dir = toTarget / dist;
+            var dot = forward.Dot(dir);
+
+            if (dot < cosHalfAngle) continue;
+
+            var traceParams = TraceParams.Builder()
+                .InteractWith(MaskTrace.Solid | MaskTrace.Player | MaskTrace.Hitbox | MaskTrace.WorldGeometry)
+                .InteractExclude(MaskTrace.Trigger)
+                .IgnoreEntity(pawn)
+                .Build();
+
+            var targetAngle = toTarget.ToQAngles();
+            var result = Core.Trace.TraceShapeAngle(eyePos.Value, targetAngle, dist, traceParams);
+
+            if (!result.DidHit) continue;
+            if (!result.HitPlayer(out var hitPlayer)) continue;
+            if (hitPlayer == null || hitPlayer.Slot != other.Slot) continue;
+
+            if (dot > bestDot)
+            {
+                bestDot = dot;
+                bestTarget = other;
+            }
+        }
+
+        return bestTarget;
     }
 
     [GameEventHandler(HookMode.Post)]
