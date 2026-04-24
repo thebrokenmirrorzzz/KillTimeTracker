@@ -64,9 +64,6 @@ public sealed class KillTimeTracker : BasePlugin
             if (player?.IsValid != true)
                 continue;
 
-            if (player.IsFakeClient)
-                continue;
-
             if (!player.IsAlive || player.Controller.TeamNum < 2)
             {
                 if (playerTargets.TryGetValue(player.Slot, out var deadState))
@@ -162,7 +159,6 @@ public sealed class KillTimeTracker : BasePlugin
         var attacker = @event.AttackerPlayer;
         var victim = @event.UserIdPlayer;
         if (attacker == null || victim == null) return HookResult.Continue;
-        if (attacker.IsFakeClient || victim.IsFakeClient) return HookResult.Continue;
 
         var attackerName = attacker.Controller?.PlayerName ?? "Unknown";
         var victimName = victim.Controller?.PlayerName ?? "Unknown";
@@ -197,7 +193,7 @@ public sealed class KillTimeTracker : BasePlugin
                          elapsed < 1000 ? "#FF8C42" : "#FF5555";
         var coloredMs = $"<span color=\"{msColor}\">{elapsed:F1}ms</span>";
 
-        attacker.SendCenterHTML(localizer["kill.output", coloredMs], 3500);
+        attacker.SendCenterHTML(localizer["kill.output", coloredMs], 2000);
 
         state.CurrentTargetSlot = -1;
         state.StartTime = 0;
