@@ -1,0 +1,5 @@
+D:\sw2_plugins\KillTimeTracker\build\publish\KillTimeTracker\resources\translations\en.jsonc
+D:\sw2_plugins\KillTimeTracker\build\publish\KillTimeTracker\resources\translations\zh-CN.jsonc
+D:\sw2_plugins\KillTimeTracker\build\publish\KillTimeTracker\KillTimeTracker.dll
+D:\sw2_plugins\KillTimeTracker\build\publish\KillTimeTracker\KillTimeTracker.pdb
+D:\sw2_plugins\KillTimeTracker\build\publish\KillTimeTracker\KillTimeTracker.deps.json

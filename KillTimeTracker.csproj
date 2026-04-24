@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <AssemblyName>KillTimeTracker</AssemblyName>
+    <RootNamespace>KillTimeTracker</RootNamespace>
+    <OutputPath>$(MSBuildThisFileDirectory)build/</OutputPath>
+    <PublishDir>$(MSBuildThisFileDirectory)build/publish/KillTimeTracker/</PublishDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SwiftlyS2.CS2" Version="*" ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="resources/translations/**/*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>
