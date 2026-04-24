@@ -64,7 +64,7 @@ public sealed class KillTimeTracker : BasePlugin
             if (player?.IsValid != true)
                 continue;
 
-            if (!player.IsAlive || player.Controller.TeamNum < 2)
+            if (!player.IsAlive)
             {
                 if (playerTargets.TryGetValue(player.Slot, out var deadState))
                 {
@@ -147,8 +147,6 @@ public sealed class KillTimeTracker : BasePlugin
         if (!result.HitPlayer(out var targetPlayer)) return null;
         if (targetPlayer == null) return null;
         if (!targetPlayer.IsValid || !targetPlayer.IsAlive) return null;
-        if (targetPlayer.Controller.TeamNum < 2) return null;
-        if (targetPlayer.Controller.TeamNum == player.Controller.TeamNum) return null;
 
         return targetPlayer;
     }
