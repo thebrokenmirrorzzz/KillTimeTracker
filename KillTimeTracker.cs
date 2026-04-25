@@ -26,6 +26,8 @@ public sealed class KillTimeTracker : BasePlugin
     private const double SIGHT_LOST_TIMEOUT_MS = 3000.0;
     private const float FOV_COS = 0.939f;
 
+    private long nextDebugLogTime;
+
     private readonly ConcurrentDictionary<int, TargetState> playerTargets = new();
     private readonly ConcurrentDictionary<int, ConcurrentDictionary<int, DamageEntry>> playerDamageTrack = new();
     private CancellationTokenSource? detectionCts;
@@ -137,12 +139,6 @@ public sealed class KillTimeTracker : BasePlugin
                 playerTargets[player.Slot] = state;
             }
 
-            var lineParams = TraceParams.Builder()
-                .InteractWith(MaskTrace.Player)
-                .InteractExclude(MaskTrace.Trigger)
-                .IgnoreEntity(pawn)
-                .Build();
-
             foreach (var other in players)
             {
                 if (other?.IsValid != true || !other.IsAlive) continue;
@@ -168,12 +164,23 @@ public sealed class KillTimeTracker : BasePlugin
                 var dot = forward.Dot(dir);
                 if (dot < FOV_COS) continue;
 
+                var pairParams = TraceParams.Builder()
+                    .WithInteraction(MaskTrace.Solid, MaskTrace.Trigger)
+                    .IgnoreEntity(pawn)
+                    .IgnoreEntity(otherPawn)
+                    .Build();
+
+                var viewerName = player.Controller?.PlayerName ?? "?";
+                var targetName = other.Controller?.PlayerName ?? "?";
+
                 workItems.Add(new TraceWorkItem(
                     player.Slot,
                     other.Slot,
                     eyePos,
                     otherOrigin,
-                    lineParams
+                    pairParams,
+                    viewerName,
+                    targetName
                 ));
             }
 
@@ -196,23 +203,46 @@ public sealed class KillTimeTracker : BasePlugin
 
         Task.Run(() =>
         {
-            var results = new List<(int ViewerSlot, int TargetSlot, bool Visible)>(capturedItems.Length);
+            var results = new List<(int ViewerSlot, int TargetSlot, bool Visible, string HitInfo)>(capturedItems.Length);
+            var blockedCount = 0;
 
             foreach (var item in capturedItems)
             {
-                var visible = TraceToPlayerStatic(
+                var (visible, hitInfo) = TraceToPlayerStatic(
                     item.EyePos,
                     item.TargetOrigin,
-                    item.TargetSlot,
                     item.ForwardParams,
                     capturedCore
                 );
-                results.Add((item.ViewerSlot, item.TargetSlot, visible));
+                results.Add((item.ViewerSlot, item.TargetSlot, visible, hitInfo));
+                if (!visible) blockedCount++;
+            }
+
+            var nowTicks = DateTime.UtcNow.Ticks;
+            if (nowTicks > Volatile.Read(ref nextDebugLogTime))
+            {
+                Interlocked.Exchange(ref nextDebugLogTime, nowTicks + TimeSpan.FromSeconds(10).Ticks);
+
+                capturedCore.Logger.LogInformation(
+                    "[KillTime/dbg] tick: {Total} pairs, {Blocked} blocked, {Visible} visible",
+                    results.Count, blockedCount, results.Count - blockedCount);
+
+                for (int i = 0; i < results.Count && i < 10; i++)
+                {
+                    var item = capturedItems[i];
+                    var r = results[i];
+                    capturedCore.Logger.LogInformation(
+                        "[KillTime/dbg]   {Viewer} ({VSlot}) -> {Target} ({TSlot}): {Vis}  hit={Hit}",
+                        item.ViewerName, item.ViewerSlot,
+                        item.TargetName, item.TargetSlot,
+                        r.Visible ? "visible" : "BLOCKED",
+                        r.HitInfo);
+                }
             }
 
             capturedCore.Scheduler.NextTick(() =>
             {
-                foreach (var (viewerSlot, targetSlot, visible) in results)
+                foreach (var (viewerSlot, targetSlot, visible, _) in results)
                 {
                     if (!visible) continue;
 
@@ -237,47 +267,56 @@ public sealed class KillTimeTracker : BasePlugin
         });
     }
 
-    private static bool TraceToPlayerStatic(
+    private static (bool Visible, string HitInfo) TraceToPlayerStatic(
         Vector from,
         Vector targetOrigin,
-        int targetSlot,
-        TraceParams forwardParams,
+        TraceParams traceParams,
         ISwiftlyCore core)
     {
-        var crossPoints = new[]
+        var centerEnd = targetOrigin + new Vector(0, 0, 55f);
+        if ((centerEnd - from).Length() > 8192f) return (false, "too_far");
+
+        var rayOffsets = new[]
         {
-            new Vector(0, 0, 72f),     // head
-            new Vector(0, 0, 55f),     // chest (center)
-            new Vector(0, 0, 36f),     // waist
-            new Vector(0, 0, 20f),     // feet
-            new Vector(-32f, 0, 55f),  // left shoulder
-            new Vector(32f, 0, 55f),   // right shoulder
+            (src: new Vector(0, 0, 0), dst: new Vector(0, 0, 55f)),    // center -> center
+            (src: new Vector(0, 0, 0), dst: new Vector(0, 0, 72f)),    // center -> head
+            (src: new Vector(0, 0, 0), dst: new Vector(0, 0, 20f)),    // center -> feet
+            (src: new Vector(-15, 0, 0), dst: new Vector(-15, 0, 55f)), // peek left
+            (src: new Vector(15, 0, 0), dst: new Vector(15, 0, 55f)),   // peek right
         };
 
-        foreach (var offset in crossPoints)
+        TraceResult? lastResult = null;
+
+        for (int i = 0; i < rayOffsets.Length; i++)
         {
-            var point = targetOrigin + offset;
+            var start = from + rayOffsets[i].src;
+            var end = targetOrigin + rayOffsets[i].dst;
+            if ((end - start).Length() > 8192f) continue;
 
-            var delta = point - from;
-            var dist = delta.Length();
-            if (dist < 0.1f || dist > 8192f) continue;
-
-            var angle = delta.ToQAngles();
             TraceResult r;
             try
             {
-                r = core.Trace.TraceShapeAngle(from, angle, dist, forwardParams);
+                r = core.Trace.TraceShapeLine(start, end, traceParams);
             }
             catch
             {
                 continue;
             }
 
-            if (r.HitPlayer(out var hp) && hp != null && hp.Slot == targetSlot)
-                return true;
+            lastResult = r;
+
+            if (!r.DidHit)
+                return (true, "");
         }
 
-        return false;
+        if (lastResult.HasValue)
+        {
+            var r = lastResult.Value;
+            var hitEntity = r.Entity?.DesignerName ?? "world";
+            return (false, $"{hitEntity} at {r.HitPoint.X:F0} {r.HitPoint.Y:F0} {r.HitPoint.Z:F0}");
+        }
+
+        return (false, "unknown");
     }
 
     [GameEventHandler(HookMode.Post)]
@@ -347,9 +386,8 @@ public sealed class KillTimeTracker : BasePlugin
 
         var localizer = Core.Translation.GetPlayerLocalizer(attacker);
 
-        string msColor = elapsed < 200 ? "#66FF66" :
-                         elapsed < 500 ? "#FFD700" :
-                         elapsed < 1000 ? "#FF8C42" : "#FF5555";
+        string msColor = elapsed < 500 ? "#5eff3eff" :
+                         elapsed < 1000 ? "#ffee00ff" : "#fa3b3bff";
         var coloredMs = $"<span color=\"{msColor}\">{elapsed:F1}ms</span>";
 
         attacker.SendCenterHTML(localizer["kill.output", coloredMs], 2000);
@@ -377,19 +415,25 @@ public sealed class KillTimeTracker : BasePlugin
         public readonly Vector EyePos;
         public readonly Vector TargetOrigin;
         public readonly TraceParams ForwardParams;
+        public readonly string ViewerName;
+        public readonly string TargetName;
 
         public TraceWorkItem(
             int viewerSlot,
             int targetSlot,
             Vector eyePos,
             Vector targetOrigin,
-            TraceParams forwardParams)
+            TraceParams forwardParams,
+            string viewerName,
+            string targetName)
         {
             ViewerSlot = viewerSlot;
             TargetSlot = targetSlot;
             EyePos = eyePos;
             TargetOrigin = targetOrigin;
             ForwardParams = forwardParams;
+            ViewerName = viewerName;
+            TargetName = targetName;
         }
     }
 

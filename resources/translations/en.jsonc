@@ -1,3 +1,3 @@
 {
-  "kill.output": "<span color=\"#C6FF15\">Kill Time</span><span color=\"white\"> >> Time </span>{0}"
+  "kill.output": "<span color=\"#E6FF08\" class=\"fontSize-sm\">Kill Time</span><span color=\"white\" class=\"fontSize-sm\"> &nbsp; &nbsp; ——&nbsp; &nbsp;   </span><span class=\"fontSize-sm\">Time taken </span><span class=\"fontSize-m fontWeight-bold\">{0}</span>"
 }
