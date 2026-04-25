@@ -24,9 +24,6 @@ public sealed class KillTimeTracker : BasePlugin
     private const double MAX_ELAPSED_MS = 9999.0;
     private const double SIGHT_LOST_TIMEOUT_MS = 3000.0;
 
-    private static readonly Vector HullMins = new(-3, -3, -3);
-    private static readonly Vector HullMaxs = new(3, 3, 3);
-
     private readonly Dictionary<int, TargetState> playerTargets = new();
     private readonly Dictionary<int, Dictionary<int, DamageEntry>> playerDamageTrack = new();
     private CancellationTokenSource? detectionCts;
@@ -104,13 +101,6 @@ public sealed class KillTimeTracker : BasePlugin
         var eyePos = eyePosNullable.Value;
         eyeAngles.ToDirectionVectors(out var forward, out var _, out var _);
 
-        var hullParams = TraceParams.Builder()
-            .WithHullRay(HullMins, HullMaxs)
-            .InteractWith(MaskTrace.Player)
-            .InteractExclude(MaskTrace.Trigger)
-            .IgnoreEntity(pawn)
-            .Build();
-
         foreach (var other in allPlayers)
         {
             if (other?.IsValid != true || !other.IsAlive) continue;
@@ -131,12 +121,19 @@ public sealed class KillTimeTracker : BasePlugin
                 continue;
             }
 
+            var forwardParams = TraceParams.Builder()
+                .WithLineRay()
+                .InteractWith(MaskTrace.Player)
+                .InteractExclude(MaskTrace.Trigger)
+                .IgnoreEntity(pawn)
+                .Build();
+
             var targetPoints = new[]
             {
-                otherOrigin with { Z = otherOrigin.Z + 72f },
-                otherOrigin with { Z = otherOrigin.Z + 55f },
-                otherOrigin with { Z = otherOrigin.Z + 36f },
-                otherOrigin with { Z = otherOrigin.Z + 20f },
+                new Vector(otherOrigin.X, otherOrigin.Y, otherOrigin.Z + 72f),
+                new Vector(otherOrigin.X, otherOrigin.Y, otherOrigin.Z + 55f),
+                new Vector(otherOrigin.X, otherOrigin.Y, otherOrigin.Z + 36f),
+                new Vector(otherOrigin.X, otherOrigin.Y, otherOrigin.Z + 20f),
             };
 
             foreach (var targetPoint in targetPoints)
@@ -149,17 +146,53 @@ public sealed class KillTimeTracker : BasePlugin
                 var dot = forward.Dot(dir);
                 if (dot < 0.939f) continue;
 
-                TraceResult r;
+                TraceResult forwardResult;
                 try
                 {
-                    r = Core.Trace.TraceShapeLine(eyePos, targetPoint, hullParams);
+                    forwardResult = Core.Trace.TraceShapeLine(eyePos, targetPoint, forwardParams);
                 }
                 catch
                 {
                     continue;
                 }
 
-                if (r.DidHit && r.HitPlayer(out var hp) && hp != null && hp.Slot == other.Slot)
+                if (forwardResult.DidHit)
+                {
+                    if (forwardResult.HitPlayer(out var hp) && hp != null && hp.Slot == other.Slot)
+                    {
+                        visible.Add(other.Slot);
+                        break;
+                    }
+
+                    var reverseParams = TraceParams.Builder()
+                        .WithLineRay()
+                        .InteractWith(MaskTrace.Player)
+                        .InteractExclude(MaskTrace.Trigger)
+                        .IgnoreEntity(otherPawn)
+                        .Build();
+                    TraceResult reverseResult;
+                    try
+                    {
+                        reverseResult = Core.Trace.TraceShapeLine(targetPoint, eyePos, reverseParams);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    if (!reverseResult.DidHit)
+                    {
+                        visible.Add(other.Slot);
+                        break;
+                    }
+
+                    if (reverseResult.HitPlayer(out var revHp) && revHp != null && revHp.Slot == viewer.Slot)
+                    {
+                        visible.Add(other.Slot);
+                        break;
+                    }
+                }
+                else
                 {
                     visible.Add(other.Slot);
                     break;
