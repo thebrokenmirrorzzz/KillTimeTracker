@@ -22,9 +22,7 @@ public sealed class KillTimeTracker : BasePlugin
 {
     private const double MAX_ELAPSED_MS = 9999.0;
     private const double SIGHT_LOST_TIMEOUT_MS = 3000.0;
-    private const float VIEW_CONE_DEGREES = 45.0f;
 
-    private readonly float cosHalfAngle = (float)Math.Cos(VIEW_CONE_DEGREES * Math.PI / 180.0);
     private readonly Dictionary<int, TargetState> playerTargets = new();
     private readonly Dictionary<int, Dictionary<int, DamageEntry>> playerDamageTrack = new();
 
@@ -161,54 +159,45 @@ public sealed class KillTimeTracker : BasePlugin
         var eyeAngles = pawn.EyeAngles;
         eyeAngles.ToDirectionVectors(out var forward, out var _, out var _);
 
+        const float halfFov = 30f;
+
         var players = Core.PlayerManager.GetAllPlayers();
         if (players == null) return null;
-
-        IPlayer? bestTarget = null;
-        float bestDot = cosHalfAngle;
 
         foreach (var other in players)
         {
             if (other?.IsValid != true || !other.IsAlive) continue;
             if (other.Slot == player.Slot) continue;
-            if (other.Controller.TeamNum < 2) continue;
-            if (other.Controller.TeamNum == player.Controller.TeamNum) continue;
 
             var otherPawn = other.PlayerPawn;
             if (otherPawn == null) continue;
-            var otherEyePos = otherPawn.EyePosition;
-            if (otherEyePos == null) continue;
 
-            var toTarget = otherEyePos.Value - eyePos.Value;
-            var dist = toTarget.Length();
+            var targetPoint = otherPawn.AbsOrigin.Value with { Z = otherPawn.AbsOrigin.Value.Z + 55f };
+
+            var delta = targetPoint - eyePos.Value;
+            var dist = delta.Length();
             if (dist < 0.1f) continue;
 
-            var dir = toTarget / dist;
+            var dir = delta / dist;
             var dot = forward.Dot(dir);
+            var angleDeg = Math.Acos(Math.Clamp(dot, -1.0, 1.0)) * (180.0 / Math.PI);
+            if (angleDeg > halfFov) continue;
 
-            if (dot < cosHalfAngle) continue;
+            var traceAngle = delta.ToQAngles();
 
             var traceParams = TraceParams.Builder()
-                .InteractWith(MaskTrace.Solid | MaskTrace.Player | MaskTrace.Hitbox | MaskTrace.WorldGeometry)
+                .InteractWith(MaskTrace.Player)
                 .InteractExclude(MaskTrace.Trigger)
                 .IgnoreEntity(pawn)
                 .Build();
 
-            var targetAngle = toTarget.ToQAngles();
-            var result = Core.Trace.TraceShapeAngle(eyePos.Value, targetAngle, dist, traceParams);
+            var r = Core.Trace.TraceShapeAngle(eyePos.Value, traceAngle, dist, traceParams);
 
-            if (!result.DidHit) continue;
-            if (!result.HitPlayer(out var hitPlayer)) continue;
-            if (hitPlayer == null || hitPlayer.Slot != other.Slot) continue;
-
-            if (dot > bestDot)
-            {
-                bestDot = dot;
-                bestTarget = other;
-            }
+            if (r.DidHit && r.HitPlayer(out var hp) && hp != null && hp.Slot == other.Slot)
+                return other;
         }
 
-        return bestTarget;
+        return null;
     }
 
     [GameEventHandler(HookMode.Post)]
@@ -262,16 +251,7 @@ public sealed class KillTimeTracker : BasePlugin
         {
             if (state.CurrentTargetSlot != -1) return HookResult.Continue;
 
-            if (playerDamageTrack.TryGetValue(attackerSlot, out var track) && track.TryGetValue(victim.Slot, out var damageEntry))
-            {
-                state.StartTime = damageEntry.FirstHitTime;
-            }
-            else
-            {
-                state.StartTime = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
-            }
-
-            state.CurrentTargetSlot = victim.Slot;
+            return HookResult.Continue;
         }
 
         if (state.HasOutput) return HookResult.Continue;
