@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using SwiftlyS2.Shared;
 using SwiftlyS2.Shared.Events;
@@ -23,9 +24,10 @@ public sealed class KillTimeTracker : BasePlugin
 {
     private const double MAX_ELAPSED_MS = 9999.0;
     private const double SIGHT_LOST_TIMEOUT_MS = 3000.0;
+    private const float FOV_COS = 0.939f;
 
-    private readonly Dictionary<int, TargetState> playerTargets = new();
-    private readonly Dictionary<int, Dictionary<int, DamageEntry>> playerDamageTrack = new();
+    private readonly ConcurrentDictionary<int, TargetState> playerTargets = new();
+    private readonly ConcurrentDictionary<int, ConcurrentDictionary<int, DamageEntry>> playerDamageTrack = new();
     private CancellationTokenSource? detectionCts;
 
     public KillTimeTracker(ISwiftlyCore core) : base(core)
@@ -57,8 +59,8 @@ public sealed class KillTimeTracker : BasePlugin
         var player = Core.PlayerManager.GetPlayer(@event.PlayerId);
         if (player == null) return;
 
-        playerTargets.Remove(player.Slot);
-        playerDamageTrack.Remove(player.Slot);
+        playerTargets.TryRemove(player.Slot, out _);
+        playerDamageTrack.TryRemove(player.Slot, out _);
     }
 
     private void CleanDamageTrack(int attackerSlot)
@@ -73,138 +75,16 @@ public sealed class KillTimeTracker : BasePlugin
                 expired.Add(kv.Key);
         }
         foreach (var victimSlot in expired)
-            track.Remove(victimSlot);
+            track.TryRemove(victimSlot, out _);
 
         if (track.Count == 0)
-            playerDamageTrack.Remove(attackerSlot);
-    }
-
-    private HashSet<int> DetectVisible(IEnumerable<IPlayer> allPlayers, IPlayer viewer)
-    {
-        var visible = new HashSet<int>();
-        var pawn = viewer.PlayerPawn;
-        if (pawn?.IsValid != true) return visible;
-
-        Vector? eyePosNullable;
-        QAngle eyeAngles;
-        try
-        {
-            eyePosNullable = pawn.EyePosition;
-            if (eyePosNullable == null) return visible;
-            eyeAngles = pawn.EyeAngles;
-        }
-        catch
-        {
-            return visible;
-        }
-
-        var eyePos = eyePosNullable.Value;
-        eyeAngles.ToDirectionVectors(out var forward, out var _, out var _);
-
-        foreach (var other in allPlayers)
-        {
-            if (other?.IsValid != true || !other.IsAlive) continue;
-            if (other.Slot == viewer.Slot) continue;
-
-            var otherPawn = other.PlayerPawn;
-            if (otherPawn?.IsValid != true) continue;
-
-            Vector otherOrigin;
-            try
-            {
-                var absOrigin = otherPawn.AbsOrigin;
-                if (absOrigin == null) continue;
-                otherOrigin = absOrigin.Value;
-            }
-            catch
-            {
-                continue;
-            }
-
-            var forwardParams = TraceParams.Builder()
-                .WithLineRay()
-                .InteractWith(MaskTrace.Player)
-                .InteractExclude(MaskTrace.Trigger)
-                .IgnoreEntity(pawn)
-                .Build();
-
-            var targetPoints = new[]
-            {
-                new Vector(otherOrigin.X, otherOrigin.Y, otherOrigin.Z + 72f),
-                new Vector(otherOrigin.X, otherOrigin.Y, otherOrigin.Z + 55f),
-                new Vector(otherOrigin.X, otherOrigin.Y, otherOrigin.Z + 36f),
-                new Vector(otherOrigin.X, otherOrigin.Y, otherOrigin.Z + 20f),
-            };
-
-            foreach (var targetPoint in targetPoints)
-            {
-                var delta = targetPoint - eyePos;
-                var dist = delta.Length();
-                if (dist < 0.1f || dist > 8192f) continue;
-
-                var dir = delta / dist;
-                var dot = forward.Dot(dir);
-                if (dot < 0.939f) continue;
-
-                TraceResult forwardResult;
-                try
-                {
-                    forwardResult = Core.Trace.TraceShapeLine(eyePos, targetPoint, forwardParams);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                if (forwardResult.DidHit)
-                {
-                    if (forwardResult.HitPlayer(out var hp) && hp != null && hp.Slot == other.Slot)
-                    {
-                        visible.Add(other.Slot);
-                        break;
-                    }
-
-                    var reverseParams = TraceParams.Builder()
-                        .WithLineRay()
-                        .InteractWith(MaskTrace.Player)
-                        .InteractExclude(MaskTrace.Trigger)
-                        .IgnoreEntity(otherPawn)
-                        .Build();
-                    TraceResult reverseResult;
-                    try
-                    {
-                        reverseResult = Core.Trace.TraceShapeLine(targetPoint, eyePos, reverseParams);
-                    }
-                    catch
-                    {
-                        continue;
-                    }
-
-                    if (!reverseResult.DidHit)
-                    {
-                        visible.Add(other.Slot);
-                        break;
-                    }
-
-                    if (reverseResult.HitPlayer(out var revHp) && revHp != null && revHp.Slot == viewer.Slot)
-                    {
-                        visible.Add(other.Slot);
-                        break;
-                    }
-                }
-                else
-                {
-                    visible.Add(other.Slot);
-                    break;
-                }
-            }
-        }
-
-        return visible;
+            playerDamageTrack.TryRemove(attackerSlot, out _);
     }
 
     private void DetectionTick()
     {
+        if (detectionCts?.IsCancellationRequested == true) return;
+
         IEnumerable<IPlayer>? players;
         try
         {
@@ -216,20 +96,40 @@ public sealed class KillTimeTracker : BasePlugin
         }
         if (players == null) return;
 
-        var playersList = players.Where(p => p?.IsValid == true).ToList();
+        var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
+        var workItems = new List<TraceWorkItem>();
 
-        foreach (var player in playersList)
+        foreach (var player in players)
         {
+            if (player?.IsValid != true) continue;
+
             if (!player.IsAlive)
             {
-                playerTargets.Remove(player.Slot);
-                playerDamageTrack.Remove(player.Slot);
+                playerTargets.TryRemove(player.Slot, out _);
+                playerDamageTrack.TryRemove(player.Slot, out _);
                 continue;
             }
 
             CleanDamageTrack(player.Slot);
 
-            var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
+            var pawn = player.PlayerPawn;
+            if (pawn?.IsValid != true) continue;
+
+            Vector? eyePosNullable;
+            QAngle eyeAngles;
+            try
+            {
+                eyePosNullable = pawn.EyePosition;
+                if (eyePosNullable == null) continue;
+                eyeAngles = pawn.EyeAngles;
+            }
+            catch
+            {
+                continue;
+            }
+
+            var eyePos = eyePosNullable.Value;
+            eyeAngles.ToDirectionVectors(out var forward, out var _, out var _);
 
             if (!playerTargets.TryGetValue(player.Slot, out var state))
             {
@@ -237,23 +137,44 @@ public sealed class KillTimeTracker : BasePlugin
                 playerTargets[player.Slot] = state;
             }
 
-            var visible = DetectVisible(playersList, player);
+            var lineParams = TraceParams.Builder()
+                .InteractWith(MaskTrace.Player)
+                .InteractExclude(MaskTrace.Trigger)
+                .IgnoreEntity(pawn)
+                .Build();
 
-            foreach (var victimSlot in visible)
+            foreach (var other in players)
             {
-                if (state.Tracked.TryGetValue(victimSlot, out var tracked))
+                if (other?.IsValid != true || !other.IsAlive) continue;
+                if (other.Slot == player.Slot) continue;
+
+                var otherPawn = other.PlayerPawn;
+                if (otherPawn?.IsValid != true) continue;
+
+                Vector otherOrigin;
+                try
                 {
-                    tracked.LastSeenTime = now;
+                    var absOrigin = otherPawn.AbsOrigin;
+                    if (absOrigin == null) continue;
+                    otherOrigin = absOrigin.Value;
                 }
-                else
+                catch
                 {
-                    state.Tracked[victimSlot] = new TrackedTarget
-                    {
-                        StartTime = now,
-                        LastSeenTime = now,
-                        HasOutput = false
-                    };
+                    continue;
                 }
+
+                var delta = new Vector(otherOrigin.X, otherOrigin.Y, otherOrigin.Z + 55f) - eyePos;
+                var dir = delta.Normalized();
+                var dot = forward.Dot(dir);
+                if (dot < FOV_COS) continue;
+
+                workItems.Add(new TraceWorkItem(
+                    player.Slot,
+                    other.Slot,
+                    eyePos,
+                    otherOrigin,
+                    lineParams
+                ));
             }
 
             var expired = new List<int>(state.Tracked.Count);
@@ -263,8 +184,100 @@ public sealed class KillTimeTracker : BasePlugin
                     expired.Add(kv.Key);
             }
             foreach (var victimSlot in expired)
-                state.Tracked.Remove(victimSlot);
+                state.Tracked.TryRemove(victimSlot, out _);
         }
+
+        if (workItems.Count == 0) return;
+
+        var capturedItems = workItems.ToArray();
+        var capturedCore = Core;
+        var capturedTargets = playerTargets;
+        var capturedNow = now;
+
+        Task.Run(() =>
+        {
+            var results = new List<(int ViewerSlot, int TargetSlot, bool Visible)>(capturedItems.Length);
+
+            foreach (var item in capturedItems)
+            {
+                var visible = TraceToPlayerStatic(
+                    item.EyePos,
+                    item.TargetOrigin,
+                    item.TargetSlot,
+                    item.ForwardParams,
+                    capturedCore
+                );
+                results.Add((item.ViewerSlot, item.TargetSlot, visible));
+            }
+
+            capturedCore.Scheduler.NextTick(() =>
+            {
+                foreach (var (viewerSlot, targetSlot, visible) in results)
+                {
+                    if (!visible) continue;
+
+                    if (capturedTargets.TryGetValue(viewerSlot, out var st))
+                    {
+                        st.Tracked.AddOrUpdate(
+                            targetSlot,
+                            _ => new TrackedTarget
+                            {
+                                StartTime = capturedNow,
+                                LastSeenTime = capturedNow,
+                                HasOutput = false
+                            },
+                            (_, tracked) =>
+                            {
+                                tracked.LastSeenTime = capturedNow;
+                                return tracked;
+                            });
+                    }
+                }
+            });
+        });
+    }
+
+    private static bool TraceToPlayerStatic(
+        Vector from,
+        Vector targetOrigin,
+        int targetSlot,
+        TraceParams forwardParams,
+        ISwiftlyCore core)
+    {
+        var crossPoints = new[]
+        {
+            new Vector(0, 0, 72f),     // head
+            new Vector(0, 0, 55f),     // chest (center)
+            new Vector(0, 0, 36f),     // waist
+            new Vector(0, 0, 20f),     // feet
+            new Vector(-32f, 0, 55f),  // left shoulder
+            new Vector(32f, 0, 55f),   // right shoulder
+        };
+
+        foreach (var offset in crossPoints)
+        {
+            var point = targetOrigin + offset;
+
+            var delta = point - from;
+            var dist = delta.Length();
+            if (dist < 0.1f || dist > 8192f) continue;
+
+            var angle = delta.ToQAngles();
+            TraceResult r;
+            try
+            {
+                r = core.Trace.TraceShapeAngle(from, angle, dist, forwardParams);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (r.HitPlayer(out var hp) && hp != null && hp.Slot == targetSlot)
+                return true;
+        }
+
+        return false;
     }
 
     [GameEventHandler(HookMode.Post)]
@@ -278,21 +291,17 @@ public sealed class KillTimeTracker : BasePlugin
         var attackerSlot = attacker.Slot;
         var victimSlot = victim.Slot;
 
-        if (!playerDamageTrack.TryGetValue(attackerSlot, out var track))
-        {
-            track = new Dictionary<int, DamageEntry>();
-            playerDamageTrack[attackerSlot] = track;
-        }
+        var track = playerDamageTrack.GetOrAdd(attackerSlot, _ => new ConcurrentDictionary<int, DamageEntry>());
 
         var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
-        if (track.TryGetValue(victimSlot, out var entry))
-        {
-            entry.LastHitTime = now;
-        }
-        else
-        {
-            track[victimSlot] = new DamageEntry { FirstHitTime = now, LastHitTime = now };
-        }
+        track.AddOrUpdate(
+            victimSlot,
+            _ => new DamageEntry { FirstHitTime = now, LastHitTime = now },
+            (_, entry) =>
+            {
+                entry.LastHitTime = now;
+                return entry;
+            });
 
         return HookResult.Continue;
     }
@@ -345,10 +354,10 @@ public sealed class KillTimeTracker : BasePlugin
 
         attacker.SendCenterHTML(localizer["kill.output", coloredMs], 2000);
 
-        state.Tracked.Remove(victimSlot);
+        state.Tracked.TryRemove(victimSlot, out _);
 
         if (playerDamageTrack.TryGetValue(attackerSlot, out var cleanTrack))
-            cleanTrack.Remove(victimSlot);
+            cleanTrack.TryRemove(victimSlot, out _);
 
         return HookResult.Continue;
     }
@@ -359,6 +368,29 @@ public sealed class KillTimeTracker : BasePlugin
         playerTargets.Clear();
         playerDamageTrack.Clear();
         return HookResult.Continue;
+    }
+
+    private readonly struct TraceWorkItem
+    {
+        public readonly int ViewerSlot;
+        public readonly int TargetSlot;
+        public readonly Vector EyePos;
+        public readonly Vector TargetOrigin;
+        public readonly TraceParams ForwardParams;
+
+        public TraceWorkItem(
+            int viewerSlot,
+            int targetSlot,
+            Vector eyePos,
+            Vector targetOrigin,
+            TraceParams forwardParams)
+        {
+            ViewerSlot = viewerSlot;
+            TargetSlot = targetSlot;
+            EyePos = eyePos;
+            TargetOrigin = targetOrigin;
+            ForwardParams = forwardParams;
+        }
     }
 
     private sealed class DamageEntry
@@ -376,6 +408,6 @@ public sealed class KillTimeTracker : BasePlugin
 
     private sealed class TargetState
     {
-        public Dictionary<int, TrackedTarget> Tracked { get; } = new();
+        public ConcurrentDictionary<int, TrackedTarget> Tracked { get; } = new();
     }
 }
