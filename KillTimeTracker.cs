@@ -281,8 +281,12 @@ public sealed class KillTimeTracker : BasePlugin
             (src: new Vector(0, 0, 0), dst: new Vector(0, 0, 55f)),    // center -> center
             (src: new Vector(0, 0, 0), dst: new Vector(0, 0, 72f)),    // center -> head
             (src: new Vector(0, 0, 0), dst: new Vector(0, 0, 20f)),    // center -> feet
-            (src: new Vector(-15, 0, 0), dst: new Vector(-15, 0, 55f)), // peek left
-            (src: new Vector(15, 0, 0), dst: new Vector(15, 0, 55f)),   // peek right
+            (src: new Vector(-15, 0, 0), dst: new Vector(-15, 0, 55f)), // peek left chest
+            (src: new Vector(-15, 0, 0), dst: new Vector(-15, 0, 96f)), // peek left head
+            (src: new Vector(-15, 0, 0), dst: new Vector(-15, 0, 20f)), // peek left feet
+            (src: new Vector(15, 0, 0), dst: new Vector(15, 0, 55f)),   // peek right chest
+            (src: new Vector(15, 0, 0), dst: new Vector(15, 0, 96f)),   // peek right head
+            (src: new Vector(15, 0, 0), dst: new Vector(15, 0, 20f)),   // peek right feet
         };
 
         TraceResult? lastResult = null;
