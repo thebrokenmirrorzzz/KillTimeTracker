@@ -8,6 +8,7 @@ using SwiftlyS2.Shared.Plugins;
 using SwiftlyS2.Shared.Misc;
 using SwiftlyS2.Shared.Natives;
 using SwiftlyS2.Shared.Trace;
+using SwiftlyS2.Shared.Scheduler;
 
 namespace KillTimeTracker;
 
@@ -23,8 +24,12 @@ public sealed class KillTimeTracker : BasePlugin
     private const double MAX_ELAPSED_MS = 9999.0;
     private const double SIGHT_LOST_TIMEOUT_MS = 3000.0;
 
+    private static readonly Vector HullMins = new(-3, -3, -3);
+    private static readonly Vector HullMaxs = new(3, 3, 3);
+
     private readonly Dictionary<int, TargetState> playerTargets = new();
     private readonly Dictionary<int, Dictionary<int, DamageEntry>> playerDamageTrack = new();
+    private CancellationTokenSource? detectionCts;
 
     public KillTimeTracker(ISwiftlyCore core) : base(core)
     {
@@ -32,7 +37,11 @@ public sealed class KillTimeTracker : BasePlugin
 
     public override void Load(bool hotReload)
     {
-        Core.Event.OnTick += DetectionTick;
+        detectionCts = Core.Scheduler.AddTimer(ctx =>
+        {
+            DetectionTick();
+            return TimerStep.WaitForMilliseconds(100);
+        });
         Core.Event.OnClientDisconnected += OnClientDisconnected;
 
         Core.Logger.LogInformation("[KillTimeTracker] Plugin loaded successfully.");
@@ -40,7 +49,7 @@ public sealed class KillTimeTracker : BasePlugin
 
     public override void Unload()
     {
-        Core.Event.OnTick -= DetectionTick;
+        detectionCts?.Cancel();
         Core.Event.OnClientDisconnected -= OnClientDisconnected;
 
         Core.Logger.LogInformation("[KillTimeTracker] Plugin unloaded.");
@@ -60,7 +69,7 @@ public sealed class KillTimeTracker : BasePlugin
         if (!playerDamageTrack.TryGetValue(attackerSlot, out var track)) return;
 
         var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
-        var expired = new List<int>();
+        var expired = new List<int>(track.Count);
         foreach (var kv in track)
         {
             if (now - kv.Value.LastHitTime > SIGHT_LOST_TIMEOUT_MS)
@@ -73,131 +82,156 @@ public sealed class KillTimeTracker : BasePlugin
             playerDamageTrack.Remove(attackerSlot);
     }
 
-    private void DetectionTick()
+    private HashSet<int> DetectVisible(IEnumerable<IPlayer> allPlayers, IPlayer viewer)
     {
-        var players = Core.PlayerManager.GetAllPlayers();
-        if (players == null) return;
+        var visible = new HashSet<int>();
+        var pawn = viewer.PlayerPawn;
+        if (pawn?.IsValid != true) return visible;
 
-        foreach (var player in players)
+        Vector? eyePosNullable;
+        QAngle eyeAngles;
+        try
         {
-            if (player?.IsValid != true)
-                continue;
+            eyePosNullable = pawn.EyePosition;
+            if (eyePosNullable == null) return visible;
+            eyeAngles = pawn.EyeAngles;
+        }
+        catch
+        {
+            return visible;
+        }
 
-            if (!player.IsAlive)
+        var eyePos = eyePosNullable.Value;
+        eyeAngles.ToDirectionVectors(out var forward, out var _, out var _);
+
+        var hullParams = TraceParams.Builder()
+            .WithHullRay(HullMins, HullMaxs)
+            .InteractWith(MaskTrace.Player)
+            .InteractExclude(MaskTrace.Trigger)
+            .IgnoreEntity(pawn)
+            .Build();
+
+        foreach (var other in allPlayers)
+        {
+            if (other?.IsValid != true || !other.IsAlive) continue;
+            if (other.Slot == viewer.Slot) continue;
+
+            var otherPawn = other.PlayerPawn;
+            if (otherPawn?.IsValid != true) continue;
+
+            Vector otherOrigin;
+            try
             {
-                if (playerTargets.TryGetValue(player.Slot, out var deadState))
-                {
-                    if (deadState.CurrentTargetSlot >= 0 && playerTargets.TryGetValue(deadState.CurrentTargetSlot, out var oldTargetState))
-                        oldTargetState.ResetByObserver();
+                var absOrigin = otherPawn.AbsOrigin;
+                if (absOrigin == null) continue;
+                otherOrigin = absOrigin.Value;
+            }
+            catch
+            {
+                continue;
+            }
 
-                    playerTargets.Remove(player.Slot);
+            var targetPoints = new[]
+            {
+                otherOrigin with { Z = otherOrigin.Z + 72f },
+                otherOrigin with { Z = otherOrigin.Z + 55f },
+                otherOrigin with { Z = otherOrigin.Z + 36f },
+                otherOrigin with { Z = otherOrigin.Z + 20f },
+            };
+
+            foreach (var targetPoint in targetPoints)
+            {
+                var delta = targetPoint - eyePos;
+                var dist = delta.Length();
+                if (dist < 0.1f || dist > 8192f) continue;
+
+                var dir = delta / dist;
+                var dot = forward.Dot(dir);
+                if (dot < 0.939f) continue;
+
+                TraceResult r;
+                try
+                {
+                    r = Core.Trace.TraceShapeLine(eyePos, targetPoint, hullParams);
+                }
+                catch
+                {
+                    continue;
                 }
 
+                if (r.DidHit && r.HitPlayer(out var hp) && hp != null && hp.Slot == other.Slot)
+                {
+                    visible.Add(other.Slot);
+                    break;
+                }
+            }
+        }
+
+        return visible;
+    }
+
+    private void DetectionTick()
+    {
+        IEnumerable<IPlayer>? players;
+        try
+        {
+            players = Core.PlayerManager.GetAllPlayers();
+        }
+        catch
+        {
+            return;
+        }
+        if (players == null) return;
+
+        var playersList = players.Where(p => p?.IsValid == true).ToList();
+
+        foreach (var player in playersList)
+        {
+            if (!player.IsAlive)
+            {
+                playerTargets.Remove(player.Slot);
                 playerDamageTrack.Remove(player.Slot);
                 continue;
             }
 
             CleanDamageTrack(player.Slot);
 
-            var target = DetectTarget(player);
+            var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
 
-            var slot = player.Slot;
-            if (!playerTargets.TryGetValue(slot, out var state))
+            if (!playerTargets.TryGetValue(player.Slot, out var state))
             {
                 state = new TargetState();
-                playerTargets[slot] = state;
+                playerTargets[player.Slot] = state;
             }
 
-            if (target != null)
+            var visible = DetectVisible(playersList, player);
+
+            foreach (var victimSlot in visible)
             {
-                var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
-                state.LastSeenTime = now;
-
-                var targetSlot = target.Slot;
-
-                if (state.CurrentTargetSlot != targetSlot)
+                if (state.Tracked.TryGetValue(victimSlot, out var tracked))
                 {
-                    if (state.CurrentTargetSlot >= 0)
+                    tracked.LastSeenTime = now;
+                }
+                else
+                {
+                    state.Tracked[victimSlot] = new TrackedTarget
                     {
-                        if (playerTargets.TryGetValue(state.CurrentTargetSlot, out var oldTargetState))
-                            oldTargetState.ResetByObserver();
-                    }
-
-                    state.CurrentTargetSlot = targetSlot;
-                    state.StartTime = now;
-                    state.HasOutput = false;
+                        StartTime = now,
+                        LastSeenTime = now,
+                        HasOutput = false
+                    };
                 }
             }
-            else
+
+            var expired = new List<int>(state.Tracked.Count);
+            foreach (var kv in state.Tracked)
             {
-                if (state.CurrentTargetSlot >= 0)
-                {
-                    var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
-                    if (now - state.LastSeenTime > SIGHT_LOST_TIMEOUT_MS)
-                    {
-                        if (playerTargets.TryGetValue(state.CurrentTargetSlot, out var oldTargetState))
-                            oldTargetState.ResetByObserver();
-
-                        state.CurrentTargetSlot = -1;
-                        state.StartTime = 0;
-                        state.HasOutput = false;
-                        state.LastSeenTime = 0;
-                    }
-                }
+                if (now - kv.Value.LastSeenTime > SIGHT_LOST_TIMEOUT_MS)
+                    expired.Add(kv.Key);
             }
+            foreach (var victimSlot in expired)
+                state.Tracked.Remove(victimSlot);
         }
-    }
-
-    private IPlayer? DetectTarget(IPlayer player)
-    {
-        var pawn = player.PlayerPawn;
-        if (pawn == null) return null;
-
-        var eyePos = pawn.EyePosition;
-        if (eyePos == null) return null;
-
-        var eyeAngles = pawn.EyeAngles;
-        eyeAngles.ToDirectionVectors(out var forward, out var _, out var _);
-
-        const float halfFov = 30f;
-
-        var players = Core.PlayerManager.GetAllPlayers();
-        if (players == null) return null;
-
-        foreach (var other in players)
-        {
-            if (other?.IsValid != true || !other.IsAlive) continue;
-            if (other.Slot == player.Slot) continue;
-
-            var otherPawn = other.PlayerPawn;
-            if (otherPawn == null) continue;
-
-            var targetPoint = otherPawn.AbsOrigin.Value with { Z = otherPawn.AbsOrigin.Value.Z + 55f };
-
-            var delta = targetPoint - eyePos.Value;
-            var dist = delta.Length();
-            if (dist < 0.1f) continue;
-
-            var dir = delta / dist;
-            var dot = forward.Dot(dir);
-            var angleDeg = Math.Acos(Math.Clamp(dot, -1.0, 1.0)) * (180.0 / Math.PI);
-            if (angleDeg > halfFov) continue;
-
-            var traceAngle = delta.ToQAngles();
-
-            var traceParams = TraceParams.Builder()
-                .InteractWith(MaskTrace.Player)
-                .InteractExclude(MaskTrace.Trigger)
-                .IgnoreEntity(pawn)
-                .Build();
-
-            var r = Core.Trace.TraceShapeAngle(eyePos.Value, traceAngle, dist, traceParams);
-
-            if (r.DidHit && r.HitPlayer(out var hp) && hp != null && hp.Slot == other.Slot)
-                return other;
-        }
-
-        return null;
     }
 
     [GameEventHandler(HookMode.Post)]
@@ -241,22 +275,29 @@ public sealed class KillTimeTracker : BasePlugin
         var victimName = victim.Controller?.PlayerName ?? "Unknown";
 
         var attackerSlot = attacker.Slot;
-        if (!playerTargets.TryGetValue(attackerSlot, out var state))
+        var victimSlot = victim.Slot;
+
+        if (!playerTargets.TryGetValue(attackerSlot, out var state)) return HookResult.Continue;
+
+        double startTime;
+
+        if (state.Tracked.TryGetValue(victimSlot, out var tracked))
         {
-            state = new TargetState();
-            playerTargets[attackerSlot] = state;
+            if (tracked.HasOutput) return HookResult.Continue;
+            startTime = tracked.StartTime;
+            tracked.HasOutput = true;
         }
-
-        if (state.CurrentTargetSlot != victim.Slot)
+        else if (playerDamageTrack.TryGetValue(attackerSlot, out var dmgTrack) && dmgTrack.TryGetValue(victimSlot, out var damageEntry))
         {
-            if (state.CurrentTargetSlot != -1) return HookResult.Continue;
-
+            startTime = damageEntry.FirstHitTime;
+        }
+        else
+        {
             return HookResult.Continue;
         }
 
-        if (state.HasOutput) return HookResult.Continue;
-
-        var elapsed = (DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond) - state.StartTime;
+        var now = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerMillisecond;
+        var elapsed = now - startTime;
         if (elapsed < 0) elapsed = 0;
         if (elapsed > MAX_ELAPSED_MS) elapsed = MAX_ELAPSED_MS;
 
@@ -271,13 +312,10 @@ public sealed class KillTimeTracker : BasePlugin
 
         attacker.SendCenterHTML(localizer["kill.output", coloredMs], 2000);
 
-        state.CurrentTargetSlot = -1;
-        state.StartTime = 0;
-        state.HasOutput = false;
-        state.LastSeenTime = 0;
+        state.Tracked.Remove(victimSlot);
 
-        if (playerDamageTrack.TryGetValue(attackerSlot, out var dmgTrack))
-            dmgTrack.Remove(victim.Slot);
+        if (playerDamageTrack.TryGetValue(attackerSlot, out var cleanTrack))
+            cleanTrack.Remove(victimSlot);
 
         return HookResult.Continue;
     }
@@ -296,17 +334,15 @@ public sealed class KillTimeTracker : BasePlugin
         public double LastHitTime;
     }
 
+    private sealed class TrackedTarget
+    {
+        public double StartTime;
+        public double LastSeenTime;
+        public bool HasOutput;
+    }
+
     private sealed class TargetState
     {
-        public int CurrentTargetSlot = -1;
-        public double StartTime;
-        public bool HasOutput;
-        public double LastSeenTime;
-
-        public void ResetByObserver()
-        {
-            CurrentTargetSlot = -1;
-            HasOutput = false;
-        }
+        public Dictionary<int, TrackedTarget> Tracked { get; } = new();
     }
 }
