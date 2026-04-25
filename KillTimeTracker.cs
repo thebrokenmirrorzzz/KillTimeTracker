@@ -396,6 +396,32 @@ public sealed class KillTimeTracker : BasePlugin
 
         attacker.SendCenterHTML(localizer["kill.output", coloredMs], 2000);
 
+        var attackerPawn = attacker.PlayerPawn;
+        if (attackerPawn != null)
+        {
+            try
+            {
+                foreach (var obs in Core.PlayerManager.GetAllPlayers())
+                {
+                    if (obs == null || !obs.IsValid || obs.IsFakeClient) continue;
+                    if (obs == attacker) continue;
+                    if (obs.Pawn?.ObserverServices is not { } obsServices) continue;
+
+                    var targetHandle = obsServices.ObserverTarget;
+                    if (!targetHandle.IsValid) continue;
+
+                    if (targetHandle.Value == attackerPawn)
+                    {
+                        var obsLocalizer = Core.Translation.GetPlayerLocalizer(obs);
+                        obs.SendCenterHTML(obsLocalizer["kill.output", coloredMs], 2000);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
         state.Tracked.TryRemove(victimSlot, out _);
 
         if (playerDamageTrack.TryGetValue(attackerSlot, out var cleanTrack))

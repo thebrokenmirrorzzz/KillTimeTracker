@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("KillTimeTracker")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+44791df95b887ef03d8c137c47e1fae2e7ae1856")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+55b0a6bf031c11b2137615bee494155979c6282b")]
 [assembly: System.Reflection.AssemblyProductAttribute("KillTimeTracker")]
 [assembly: System.Reflection.AssemblyTitleAttribute("KillTimeTracker")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
