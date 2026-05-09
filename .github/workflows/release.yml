@@ -3,7 +3,7 @@ name: Build & Release
 on:
   push:
     branches:
-      - main
+      - master
 
 permissions:
   contents: write
@@ -53,7 +53,7 @@ jobs:
           git add KillTimeTracker.cs
           git commit -m "chore: bump version to ${{ env.version }} [skip ci]"
           git tag "v${{ env.version }}"
-          git push origin HEAD:main
+          git push origin HEAD:master
           git push origin "v${{ env.version }}"
 
       - name: Publish
