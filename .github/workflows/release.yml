@@ -45,14 +45,15 @@ jobs:
           Set-Content $path $content
           Write-Host "Bumped ${{ env.old_ver }} -> ${{ env.version }}"
 
-      - name: Commit & tag
+      - name: Commit version bump & push
         shell: pwsh
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add KillTimeTracker.cs
-          git commit -m "chore: bump version to ${{ env.version }}"
+          git commit -m "chore: bump version to ${{ env.version }} [skip ci]"
           git tag "v${{ env.version }}"
+          git push origin HEAD:main
           git push origin "v${{ env.version }}"
 
       - name: Publish
