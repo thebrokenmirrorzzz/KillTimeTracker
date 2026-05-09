@@ -1,4 +1,4 @@
 {
   "kill.output": "<span color=\"#E6FF08\" class=\"fontSize-sm\">Kill Time</span><span color=\"white\" class=\"fontSize-sm\"> &nbsp; &nbsp; ——&nbsp; &nbsp;   </span><span class=\"fontSize-sm\">Time taken </span><span class=\"fontSize-m fontWeight-bold\">{0}</span>",
-  "kill.stats": "<br><span class=\"fontSize-sm\">Avg Time </span><span class=\"fontSize-m fontWeight-bold\">{0}</span><span class=\"fontSize-sm\"> - Round Kills </span><span class=\"fontSize-m fontWeight-bold\">{1}</span>"
+  "kill.stats": "<br><span class=\"fontSize-sm\">Avg Time </span><span class=\"fontSize-m fontWeight-bold\">{0}</span><span class=\"fontSize-sm\"> - </span><span class=\"fontSize-m fontWeight-bold\">{1}</span> Round Kills"
 }

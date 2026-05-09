@@ -23,4 +23,21 @@
     </Content>
   </ItemGroup>
 
+  <Target Name="CreateReleaseZip" AfterTargets="Publish">
+    <PropertyGroup>
+      <ReleaseDir>$(MSBuildThisFileDirectory)Release</ReleaseDir>
+      <ReleaseZip>$(ReleaseDir)\KillTimeTracker-$(Version).zip</ReleaseZip>
+    </PropertyGroup>
+
+    <RemoveDir Directories="$(ReleaseDir)" />
+    <MakeDir Directories="$(ReleaseDir)" />
+
+    <ZipDirectory
+      SourceDirectory="$(PublishDir)"
+      DestinationFile="$(ReleaseZip)"
+      Overwrite="true" />
+
+    <Message Text="Release zip created: $(ReleaseZip)" Importance="high" />
+  </Target>
+
 </Project>

@@ -17,7 +17,7 @@ namespace KillTimeTracker;
     Version = "1.0.0",
     Name = "Kill Time Tracker",
     Author = "thebrokenmirror",
-    Description = "击杀计时器，记录玩家击杀时间。"
+    Description = "击杀计时器，记录并输出玩家击杀时间。"
 )]
 public sealed class KillTimeTracker : BasePlugin
 {
