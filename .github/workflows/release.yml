@@ -2,43 +2,62 @@ name: Build & Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
-      - name: Extract version from tag
+      - name: Read current version & bump patch
         id: version
+        shell: pwsh
         run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          $content = Get-Content "KillTimeTracker.cs" -Raw
+          if ($content -match 'Version\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
+            $major = [int]$Matches[1]
+            $minor = [int]$Matches[2]
+            $patch = [int]$Matches[3] + 1
+            $newVer = "$major.$minor.$patch"
+            echo "version=$newVer" >> $env:GITHUB_ENV
+            echo "old_ver=$($Matches[0])" >> $env:GITHUB_ENV
+          }
 
-      - name: Update PluginMetadata version in source
+      - name: Bump version in source
         shell: pwsh
         run: |
           $path = "KillTimeTracker.cs"
           $content = Get-Content $path -Raw
-          $content = $content -replace '(?<=Version\s*=\s*")[^"]+(?=")', '${{ steps.version.outputs.version }}'
+          $content = $content -replace '(?<=Version\s*=\s*")[^"]+(?=")', "${{ env.version }}"
           Set-Content $path $content
+          Write-Host "Bumped ${{ env.old_ver }} -> ${{ env.version }}"
+
+      - name: Commit & tag
+        shell: pwsh
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add KillTimeTracker.cs
+          git commit -m "chore: bump version to ${{ env.version }}"
+          git tag "v${{ env.version }}"
+          git push origin "v${{ env.version }}"
 
       - name: Publish
         run: |
-          dotnet publish -c Release -p:Version=${{ steps.version.outputs.version }}
+          dotnet publish -c Release -p:Version=${{ env.version }}
 
       - name: Locate zip
         id: zip
@@ -51,10 +70,14 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: KillTimeTracker v${{ steps.version.outputs.version }}
+          tag_name: v${{ env.version }}
+          name: KillTimeTracker v${{ env.version }}
           body: |
-            KillTimeTracker v${{ steps.version.outputs.version }}
+            KillTimeTracker v${{ env.version }}
 
             将 `${{ steps.zip.outputs.name }}` 解压到 `game/csgo/addons/swiftlys2/plugins/` 目录即可使用。
+
+            ---
+
+            Extract `${{ steps.zip.outputs.name }}` into `game/csgo/addons/swiftlys2/plugins/` to install.
           files: ${{ steps.zip.outputs.path }}
