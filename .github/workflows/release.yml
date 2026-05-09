@@ -1,0 +1,60 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Update PluginMetadata version in source
+        shell: pwsh
+        run: |
+          $path = "KillTimeTracker.cs"
+          $content = Get-Content $path -Raw
+          $content = $content -replace '(?<=Version\s*=\s*")[^"]+(?=")', '${{ steps.version.outputs.version }}'
+          Set-Content $path $content
+
+      - name: Publish
+        run: |
+          dotnet publish -c Release -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Locate zip
+        id: zip
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path Release -Filter "*.zip" | Select-Object -First 1
+          echo "path=$($zip.FullName)" >> $env:GITHUB_OUTPUT
+          echo "name=$($zip.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: KillTimeTracker v${{ steps.version.outputs.version }}
+          body: |
+            KillTimeTracker v${{ steps.version.outputs.version }}
+
+            将 `${{ steps.zip.outputs.name }}` 解压到 `game/csgo/addons/swiftlys2/plugins/` 目录即可使用。
+          files: ${{ steps.zip.outputs.path }}
