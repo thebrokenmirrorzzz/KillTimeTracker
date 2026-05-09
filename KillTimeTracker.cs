@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using Microsoft.Extensions.Logging;
 using SwiftlyS2.Shared;
 using SwiftlyS2.Shared.Events;
 using SwiftlyS2.Shared.GameEventDefinitions;
@@ -26,10 +25,9 @@ public sealed class KillTimeTracker : BasePlugin
     private const double SIGHT_LOST_TIMEOUT_MS = 3000.0;
     private const float FOV_COS = 0.939f;
 
-    private long nextDebugLogTime;
-
     private readonly ConcurrentDictionary<int, TargetState> playerTargets = new();
     private readonly ConcurrentDictionary<int, ConcurrentDictionary<int, DamageEntry>> playerDamageTrack = new();
+    private readonly ConcurrentDictionary<ulong, PlayerPermanentStats> playerPermanentStats = new();
     private CancellationTokenSource? detectionCts;
 
     public KillTimeTracker(ISwiftlyCore core) : base(core)
@@ -44,16 +42,12 @@ public sealed class KillTimeTracker : BasePlugin
             return TimerStep.WaitForMilliseconds(100);
         });
         Core.Event.OnClientDisconnected += OnClientDisconnected;
-
-        Core.Logger.LogInformation("[KillTimeTracker] Plugin loaded successfully.");
     }
 
     public override void Unload()
     {
         detectionCts?.Cancel();
         Core.Event.OnClientDisconnected -= OnClientDisconnected;
-
-        Core.Logger.LogInformation("[KillTimeTracker] Plugin unloaded.");
     }
 
     private void OnClientDisconnected(IOnClientDisconnectedEvent @event)
@@ -63,6 +57,7 @@ public sealed class KillTimeTracker : BasePlugin
 
         playerTargets.TryRemove(player.Slot, out _);
         playerDamageTrack.TryRemove(player.Slot, out _);
+        playerPermanentStats.TryRemove(player.SteamID, out _);
     }
 
     private void CleanDamageTrack(int attackerSlot)
@@ -218,28 +213,6 @@ public sealed class KillTimeTracker : BasePlugin
                 if (!visible) blockedCount++;
             }
 
-            var nowTicks = DateTime.UtcNow.Ticks;
-            if (nowTicks > Volatile.Read(ref nextDebugLogTime))
-            {
-                Interlocked.Exchange(ref nextDebugLogTime, nowTicks + TimeSpan.FromSeconds(10).Ticks);
-
-                capturedCore.Logger.LogInformation(
-                    "[KillTime/dbg] tick: {Total} pairs, {Blocked} blocked, {Visible} visible",
-                    results.Count, blockedCount, results.Count - blockedCount);
-
-                for (int i = 0; i < results.Count && i < 10; i++)
-                {
-                    var item = capturedItems[i];
-                    var r = results[i];
-                    capturedCore.Logger.LogInformation(
-                        "[KillTime/dbg]   {Viewer} ({VSlot}) -> {Target} ({TSlot}): {Vis}  hit={Hit}",
-                        item.ViewerName, item.ViewerSlot,
-                        item.TargetName, item.TargetSlot,
-                        r.Visible ? "visible" : "BLOCKED",
-                        r.HitInfo);
-                }
-            }
-
             capturedCore.Scheduler.NextTick(() =>
             {
                 foreach (var (viewerSlot, targetSlot, visible, _) in results)
@@ -386,15 +359,25 @@ public sealed class KillTimeTracker : BasePlugin
         if (elapsed < 0) elapsed = 0;
         if (elapsed > MAX_ELAPSED_MS) elapsed = MAX_ELAPSED_MS;
 
-        Core.Logger.LogInformation($"[KillTime] {attackerName} killed {victimName} in {elapsed:F1}ms");
-
         var localizer = Core.Translation.GetPlayerLocalizer(attacker);
 
         string msColor = elapsed < 500 ? "#5eff3eff" :
                          elapsed < 1000 ? "#ffee00ff" : "#fa3b3bff";
         var coloredMs = $"<span color=\"{msColor}\">{elapsed:F1}ms</span>";
 
-        attacker.SendCenterHTML(localizer["kill.output", coloredMs], 2000);
+        var attackerSteamId = attacker.SteamID;
+        var stats = playerPermanentStats.GetOrAdd(attackerSteamId, _ => new PlayerPermanentStats());
+        stats.TotalKills++;
+        stats.TotalElapsedMs += elapsed;
+        stats.RoundKills++;
+
+        var avgMs = stats.TotalKills > 0 ? stats.TotalElapsedMs / stats.TotalKills : 0;
+        string avgColor = avgMs < 500 ? "#5eff3eff" :
+                          avgMs < 1000 ? "#ffee00ff" : "#fa3b3bff";
+        var coloredAvg = $"<span color=\"{avgColor}\">{avgMs:F1}ms</span>";
+
+        var outputMsg = localizer["kill.output", coloredMs] + localizer["kill.stats", coloredAvg, stats.RoundKills];
+        attacker.SendCenterHTML(outputMsg, 2000);
 
         var attackerPawn = attacker.PlayerPawn;
         if (attackerPawn != null)
@@ -413,7 +396,7 @@ public sealed class KillTimeTracker : BasePlugin
                     if (targetHandle.Value == attackerPawn)
                     {
                         var obsLocalizer = Core.Translation.GetPlayerLocalizer(obs);
-                        obs.SendCenterHTML(obsLocalizer["kill.output", coloredMs], 2000);
+                        obs.SendCenterHTML(obsLocalizer["kill.output", coloredMs] + obsLocalizer["kill.stats", coloredAvg, stats.RoundKills], 2000);
                     }
                 }
             }
@@ -435,6 +418,10 @@ public sealed class KillTimeTracker : BasePlugin
     {
         playerTargets.Clear();
         playerDamageTrack.Clear();
+
+        foreach (var kv in playerPermanentStats)
+            kv.Value.RoundKills = 0;
+
         return HookResult.Continue;
     }
 
@@ -483,5 +470,12 @@ public sealed class KillTimeTracker : BasePlugin
     private sealed class TargetState
     {
         public ConcurrentDictionary<int, TrackedTarget> Tracked { get; } = new();
+    }
+
+    private sealed class PlayerPermanentStats
+    {
+        public double TotalElapsedMs;
+        public int TotalKills;
+        public int RoundKills;
     }
 }

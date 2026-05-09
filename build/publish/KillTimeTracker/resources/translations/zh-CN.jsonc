@@ -1,3 +1,4 @@
 {
-  "kill.output": "<span color=\"#E6FF08\" class=\"fontSize-sm\">击杀耗时</span><span color=\"white\" class=\"fontSize-sm\"> &nbsp; &nbsp; ——&nbsp; &nbsp;   </span><span class=\"fontSize-sm\">用时 </span><span class=\"fontSize-m fontWeight-bold\">{0}</span>"
+  "kill.output": "<span color=\"#E6FF08\" class=\"fontSize-sm\">击杀耗时</span><span color=\"white\" class=\"fontSize-sm\"> &nbsp; &nbsp; ——&nbsp; &nbsp;   </span><span class=\"fontSize-sm\">用时 </span><span class=\"fontSize-m fontWeight-bold\">{0}</span>",
+  "kill.stats": "<br><span class=\"fontSize-sm\">平均 </span><span class=\"fontSize-m fontWeight-bold\">{0}</span><span class=\"fontSize-sm\"> - 回合击败 </span><span class=\"fontSize-m fontWeight-bold\">{1}</span>"
 }
