@@ -14,7 +14,7 @@ namespace KillTimeTracker;
 
 [PluginMetadata(
     Id = "KillTimeTracker",
-    Version = "1.0.1",
+    Version = "1.0.0",
     Name = "Kill Time Tracker",
     Author = "thebrokenmirror",
     Description = "击杀计时器，记录并输出玩家击杀时间。"
